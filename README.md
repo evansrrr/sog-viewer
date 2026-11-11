@@ -8,6 +8,17 @@ No build step, no framework, no runtime dependencies. Clone it, serve the folder
 ~1,300 lines of plain ES modules   ·   one static folder   ·   MIT
 ```
 
+> **Serve it over HTTP.** ES modules and `fetch` are both blocked on `file://`,
+> so double-clicking `index.html` will not work — the page detects this and says
+> so instead of hanging. Use any static server:
+>
+> ```bash
+> cd sog-viewer
+> python -m http.server 8080     # then open http://localhost:8080
+> ```
+>
+> No Python? `npx serve .` behaves identically.
+
 ## Why another splat viewer
 
 Most web splat viewers are either a large engine you have to adopt wholesale, or a demo that only handles `.ply`. This one is deliberately narrow: read the SOG container correctly, project the Gaussians properly, keep the main thread free, and stay small enough to read in an afternoon.

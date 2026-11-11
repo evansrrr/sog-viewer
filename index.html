@@ -85,13 +85,75 @@
   <div class="loader-inner">
     <div class="loader-bar"><i id="loaderBar"></i></div>
     <div class="loader-text" id="loaderText">Loading</div>
+    <div class="loader-hint" id="loaderHint" hidden></div>
   </div>
 </div>
 
 <input type="file" id="fileInput" accept=".sog,application/octet-stream" hidden>
 
+<script>
+  (function () {
+    var loader = document.getElementById('loader');
+    var text = document.getElementById('loaderText');
+    var hint = document.getElementById('loaderHint');
+    var bar = document.getElementById('loaderBar');
+
+    function fail(message, detail) {
+      if (window.__sogStarted) return;
+      loader.classList.remove('is-hidden', 'is-idle');
+      loader.classList.add('is-error');
+      text.textContent = message;
+      hint.textContent = detail;
+      hint.hidden = false;
+      bar.style.width = '100%';
+    }
+
+    window.__sogFail = fail;
+
+    if (location.protocol === 'file:') {
+      fail(
+        'This page has to be served over HTTP.',
+        'Browsers block ES modules and fetch() on file://, so nothing can load.\n\n' +
+          'cd into this folder and run:\n' +
+          '  python -m http.server 8080\n\n' +
+          'then open http://localhost:8080'
+      );
+      return;
+    }
+
+    window.addEventListener(
+      'error',
+      function (event) {
+        if (window.__sogStarted || !event.message) return;
+        fail('The viewer failed to start.', event.message);
+      },
+      true
+    );
+
+    window.addEventListener('unhandledrejection', function (event) {
+      if (window.__sogStarted) return;
+      var reason = event.reason;
+      fail('The viewer failed to start.', String((reason && reason.message) || reason));
+    });
+
+    setTimeout(function () {
+      fail(
+        'The viewer did not start.',
+        'Open the browser console to read the module or network error.'
+      );
+    }, 8000);
+  })();
+</script>
+
 <script type="module">
-  import { createViewer } from './src/viewer.js';
+  let createViewer;
+  try {
+    ({ createViewer } = await import('./src/viewer.js'));
+    window.__sogStarted = true;
+  } catch (error) {
+    window.__sogFail?.('Failed to load the viewer module.', String((error && error.message) || error));
+    throw error;
+  }
 
   const viewer = createViewer(document.getElementById('viewer'));
   const $ = (id) => document.getElementById(id);

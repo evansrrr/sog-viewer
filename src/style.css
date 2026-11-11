@@ -375,6 +375,25 @@ select {
   line-height: 1.6;
 }
 
+.loader.is-error .loader-inner {
+  width: min(560px, 90vw);
+}
+
+.loader-hint {
+  max-width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--muted);
+  text-align: center;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .loader-inner {
   display: grid;
   gap: 12px;
