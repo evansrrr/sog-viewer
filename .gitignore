@@ -1,0 +1,10 @@
+node_modules/
+_dev/
+*.sog
+*.ply
+*.spz
+*.ksplat
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

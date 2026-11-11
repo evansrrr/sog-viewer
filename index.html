@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>SOG Viewer</title>
+<meta name="description" content="A lightweight, dependency-free WebGL2 viewer for SOG Gaussian splats.">
+<link rel="stylesheet" href="./src/style.css">
+</head>
+<body>
+<canvas id="viewer"></canvas>
+
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+      <circle cx="12" cy="12" r="2.6"/>
+      <path d="M12 3.2v3.4M12 17.4v3.4M5.1 5.1l2.4 2.4M16.5 16.5l2.4 2.4M3.2 12h3.4M17.4 12h3.4M5.1 18.9l2.4-2.4M16.5 7.5l2.4-2.4"/>
+    </svg>
+    <span>SOG Viewer</span>
+  </div>
+  <div class="doc" id="docName"></div>
+</header>
+
+<button class="icon-button" id="togglePanel" aria-label="Toggle statistics" aria-expanded="false">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+    <path d="M4 7h16M4 12h16M4 17h10"/>
+  </svg>
+</button>
+
+<aside class="panel" id="panel" aria-hidden="true">
+  <section>
+    <h2>Scene</h2>
+    <dl class="stats">
+      <div><dt>Splats</dt><dd id="statSplats">—</dd></div>
+      <div><dt>Visible</dt><dd id="statVisible">—</dd></div>
+      <div><dt>Format</dt><dd id="statFormat">SOG v2</dd></div>
+      <div><dt>File</dt><dd id="statSize">—</dd></div>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Performance</h2>
+    <dl class="stats">
+      <div><dt>Frame</dt><dd id="statFrame">—</dd></div>
+      <div><dt>Sort</dt><dd id="statSort">—</dd></div>
+      <div><dt>Load</dt><dd id="statLoad">—</dd></div>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Display</h2>
+    <label class="field">
+      <span>Exposure</span>
+      <input type="range" id="exposure" min="0.4" max="2.2" step="0.02" value="1">
+    </label>
+    <label class="field">
+      <span>Pixel ratio</span>
+      <select id="pixelRatio">
+        <option value="1">1.0</option>
+        <option value="1.5">1.5</option>
+        <option value="2" selected>2.0</option>
+      </select>
+    </label>
+    <button class="wide" id="loadFile">Open a .sog file</button>
+  </section>
+</aside>
+
+<footer class="hints">
+  <span><b>Drag</b> orbit</span>
+  <span><b>Right drag</b> pan</span>
+  <span><b>Scroll</b> zoom</span>
+</footer>
+
+<div class="dropzone" id="dropzone" aria-hidden="true">
+  <div class="dropzone-card">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+      <path d="M12 16V4M7 9l5-5 5 5M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/>
+    </svg>
+    <p>Drop a <b>.sog</b> file</p>
+  </div>
+</div>
+
+<div class="loader" id="loader">
+  <div class="loader-inner">
+    <div class="loader-bar"><i id="loaderBar"></i></div>
+    <div class="loader-text" id="loaderText">Loading</div>
+  </div>
+</div>
+
+<input type="file" id="fileInput" accept=".sog,application/octet-stream" hidden>
+
+<script type="module">
+  import { createViewer } from './src/viewer.js';
+
+  const viewer = createViewer(document.getElementById('viewer'));
+  const $ = (id) => document.getElementById(id);
+
+  const setText = (id, value) => { $(id).textContent = value; };
+
+  const phaseLabels = {
+    fetch: 'Fetching',
+    unpack: 'Unpacking container',
+    image: 'Decoding image planes',
+    decode: 'Dequantising splats',
+    upload: 'Uploading to GPU',
+    ready: 'Ready'
+  };
+
+  viewer.on('progress', ({ phase, ratio }) => {
+    $('loader').classList.remove('is-hidden', 'is-idle', 'is-error');
+    $('loaderBar').style.width = `${Math.round(Math.min(1, ratio) * 100)}%`;
+    $('loaderText').textContent = phaseLabels[phase] ?? 'Loading';
+  });
+
+  viewer.on('load', ({ name, bytes, splats, loadMs }) => {
+    $('docName').textContent = name;
+    setText('statSplats', splats.toLocaleString());
+    setText('statSize', `${(bytes / 1048576).toFixed(2)} MB`);
+    setText('statLoad', `${Math.round(loadMs)} ms`);
+    setTimeout(() => $('loader').classList.add('is-hidden'), 120);
+  });
+
+  viewer.on('stats', ({ frameMs, sortMs, visible, total }) => {
+    setText('statFrame', `${frameMs.toFixed(1)} ms`);
+    setText('statSort', `${sortMs.toFixed(1)} ms`);
+    setText('statVisible', `${visible.toLocaleString()} / ${total.toLocaleString()}`);
+  });
+
+  viewer.on('error', (message) => {
+    $('loaderText').textContent = message;
+    $('loader').classList.add('is-error');
+  });
+
+  const panel = $('panel');
+  const toggle = $('togglePanel');
+  toggle.addEventListener('click', () => {
+    const open = panel.classList.toggle('is-open');
+    toggle.setAttribute('aria-expanded', String(open));
+    panel.setAttribute('aria-hidden', String(!open));
+  });
+
+  $('exposure').addEventListener('input', (event) => {
+    viewer.setExposure(Number(event.target.value));
+  });
+
+  $('pixelRatio').addEventListener('change', (event) => {
+    viewer.setPixelRatio(Number(event.target.value));
+  });
+
+  const fileInput = $('fileInput');
+  $('loadFile').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files?.[0];
+    if (file) viewer.loadFile(file);
+  });
+
+  const dropzone = $('dropzone');
+  let dragDepth = 0;
+
+  window.addEventListener('dragenter', (event) => {
+    event.preventDefault();
+    dragDepth += 1;
+    dropzone.classList.add('is-active');
+  });
+  window.addEventListener('dragover', (event) => event.preventDefault());
+  window.addEventListener('dragleave', (event) => {
+    event.preventDefault();
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) dropzone.classList.remove('is-active');
+  });
+  window.addEventListener('drop', (event) => {
+    event.preventDefault();
+    dragDepth = 0;
+    dropzone.classList.remove('is-active');
+    const file = event.dataTransfer?.files?.[0];
+    if (file) viewer.loadFile(file);
+  });
+
+  const source = new URLSearchParams(location.search).get('src');
+  viewer.loadUrl(source || './demo.sog').catch(() => {
+    $('loaderText').textContent = 'No scene loaded — drop a .sog file to begin';
+    $('loader').classList.add('is-idle');
+  });
+</script>
+</body>
+</html>

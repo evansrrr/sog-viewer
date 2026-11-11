@@ -1,0 +1,34 @@
+{
+  "name": "sog-viewer",
+  "version": "0.1.0",
+  "description": "A lightweight, dependency-free WebGL2 viewer for SOG Gaussian splats.",
+  "type": "module",
+  "main": "./src/viewer.js",
+  "exports": {
+    ".": "./src/viewer.js",
+    "./sog": "./src/sog.js",
+    "./renderer": "./src/renderer.js",
+    "./controls": "./src/controls.js"
+  },
+  "files": [
+    "src",
+    "index.html",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "gaussian-splatting",
+    "sog",
+    "webgl2",
+    "3dgs",
+    "splat",
+    "viewer",
+    "webgl",
+    "point-cloud"
+  ],
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  }
+}
