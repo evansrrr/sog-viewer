@@ -239,6 +239,9 @@ export function createViewer(canvas, options = {}) {
     get renderer() {
       return renderer;
     },
+    get stats() {
+      return { frameMs, sortMs, visible, total: renderer.count };
+    },
     get controls() {
       return controls;
     },

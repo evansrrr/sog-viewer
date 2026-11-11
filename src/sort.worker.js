@@ -7,14 +7,21 @@
  * lives here.
  *
  * Sorting is a counting sort over quantised view-space depth: O(n + bins), no
- * comparisons, and it also culls splats that fall outside the frustum so the
- * GPU never touches them.
+ * comparisons, and it also culls splats that fall outside the frustum so the GPU
+ * never touches them.
+ *
+ * The view transform is the expensive part, so it runs exactly once per splat in
+ * the first pass. Splats that fail culling are marked with a sentinel depth and
+ * skipped by the remaining two passes, which only read the array back.
  */
 
 const BINS = 1 << 16;
 
 /** Conservative screen margin, wide enough to keep splats whose quad straddles the edge. */
 const MARGIN = 1.25;
+
+/** Larger than any real view depth; marks a culled splat. */
+const CULLED = 1e30;
 
 let position = null;
 let count = 0;
@@ -52,14 +59,14 @@ self.onmessage = (event) => {
   const view = message.view;
   const proj = message.proj;
 
-  // View-space depth drives the ordering; the two other axes drive culling.
-  const m2 = view[2];
-  const m6 = view[6];
-  const m10 = view[10];
-  const m14 = view[14];
+  const m0 = view[0], m1 = view[1], m2 = view[2];
+  const m4 = view[4], m5 = view[5], m6 = view[6];
+  const m8 = view[8], m9 = view[9], m10 = view[10];
+  const m12 = view[12], m13 = view[13], m14 = view[14];
   const px = proj[0];
   const py = proj[5];
 
+  // Pass 1: transform once, reject what cannot reach the screen, record depth range.
   let lo = Infinity;
   let hi = -Infinity;
 
@@ -68,48 +75,51 @@ self.onmessage = (event) => {
     const x = position[t];
     const y = position[t + 1];
     const z = position[t + 2];
-    const vz = m2 * x + m6 * y + m10 * z + m14;
-    depth[i] = vz;
-    if (vz < lo) lo = vz;
-    if (vz > hi) hi = vz;
+
+    const wz = m2 * x + m6 * y + m10 * z + m14;
+    const w = -wz;
+    if (w <= 0.02) {
+      depth[i] = CULLED;
+      continue;
+    }
+
+    const cx = m0 * x + m4 * y + m8 * z + m12;
+    const cy = m1 * x + m5 * y + m9 * z + m13;
+    const nx = (px * cx) / w;
+    const ny = (py * cy) / w;
+    if (nx < -MARGIN || nx > MARGIN || ny < -MARGIN || ny > MARGIN) {
+      depth[i] = CULLED;
+      continue;
+    }
+
+    depth[i] = wz;
+    if (wz < lo) lo = wz;
+    if (wz > hi) hi = wz;
   }
 
   const span = hi - lo;
   const scale = span > 1e-6 ? (BINS - 1) / span : 0;
 
+  // Pass 2: histogram of visible splats only.
   hist.fill(0);
-
-  // Count only splats that survive culling.
   let visible = 0;
   for (let i = 0; i < count; i++) {
-    const wz = depth[i];
-    const t = i * 4;
-    const x = position[t];
-    const y = position[t + 1];
-    const z = position[t + 2];
-    const cx = view[0] * x + view[4] * y + view[8] * z + view[12];
-    const cy = view[1] * x + view[5] * y + view[9] * z + view[13];
-
-    const w = -wz;
-    if (w > 0.02) {
-      const nx = (px * cx) / w;
-      const ny = (py * cy) / w;
-      if (nx < -MARGIN || nx > MARGIN || ny < -MARGIN || ny > MARGIN) continue;
-    } else {
-      // Behind the camera, or close enough that projection is meaningless.
-      continue;
-    }
-
-    hist[(wz - lo) * scale | 0]++;
+    const d = depth[i];
+    if (d === CULLED) continue;
+    hist[((d - lo) * scale) | 0]++;
     visible++;
   }
 
   if (visible === 0) {
-    self.postMessage({ type: 'sorted', order: order.buffer, visible: 0, ms: performance.now() - started, seq: message.seq }, [order.buffer]);
+    self.postMessage(
+      { type: 'sorted', order: order.buffer, visible: 0, ms: performance.now() - started, seq: message.seq },
+      [order.buffer]
+    );
     order = null;
     return;
   }
 
+  // Prefix sum turns the histogram into write cursors.
   let acc = 0;
   for (let b = 0; b < BINS; b++) {
     const c = hist[b];
@@ -117,22 +127,11 @@ self.onmessage = (event) => {
     acc += c;
   }
 
+  // Pass 3: scatter. Back-to-front, so the far end is written first.
   for (let i = 0; i < count; i++) {
-    const wz = depth[i];
-    const t = i * 4;
-    const x = position[t];
-    const y = position[t + 1];
-    const z = position[t + 2];
-    const cx = view[0] * x + view[4] * y + view[8] * z + view[12];
-    const cy = view[1] * x + view[5] * y + view[9] * z + view[13];
-
-    const w = -wz;
-    if (w <= 0.02) continue;
-    const nx = (px * cx) / w;
-    const ny = (py * cy) / w;
-    if (nx < -MARGIN || nx > MARGIN || ny < -MARGIN || ny > MARGIN) continue;
-
-    order[hist[(wz - lo) * scale | 0]++] = i;
+    const d = depth[i];
+    if (d === CULLED) continue;
+    order[hist[((d - lo) * scale) | 0]++] = i;
   }
 
   self.postMessage(

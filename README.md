@@ -5,7 +5,7 @@ A lightweight, dependency-free WebGL2 viewer for [SOG](https://developer.playcan
 No build step, no framework, no runtime dependencies. Clone it, serve the folder, open the page.
 
 ```
-~1,300 lines of plain ES modules   ·   one static folder   ·   MIT
+~1,150 lines of plain ES modules   ·   one static folder   ·   MIT
 ```
 
 > **Serve it over HTTP.** ES modules and `fetch` are both blocked on `file://`,
@@ -31,7 +31,7 @@ It exists because a hand-rolled SOG path is easy to get subtly wrong — a ZIP s
 - **Anisotropic rasterisation** — each splat is an instanced quad sized by projecting its 3×3 covariance and eigendecomposing the resulting 2×2 screen-space matrix
 - **Depth sorting off the main thread** — counting sort over quantised view depth, running in a Worker, with double-buffered order hand-off
 - **Frustum culling** — splats outside the view are dropped before they reach the GPU, so the draw call shrinks with the view
-- **Attributes stay on the GPU** — positions, rotations, scales and colours live in float textures; nothing is repacked per frame
+- **Attributes stay on the GPU** — positions, covariances and colours live in float textures, with the covariance baked at load; nothing is repacked per frame
 - **Pointer-native controls** — orbit, pan, pinch and wheel share a single code path, with easing
 - **Drop-in** — drag a `.sog` onto the window, or pass a URL
 
@@ -83,22 +83,25 @@ Measured on one synthetic fixture — 338,964 splats, SOG v2 with 3 SH bands, on
 
 | Stage | Time | Notes |
 |---|---|---|
-| Load (bytes → GPU) | ~135–310 ms | container unpack, 8 WebP planes, dequantisation |
-| Depth sort | ~13 ms | in a Worker; does not block the frame |
-| Frame (render) | ~5.7 ms | 4 instanced vertices per splat |
+| Load (bytes → GPU) | ~190 ms | unpack, 8 WebP planes, dequantise, bake covariance |
+| Depth sort | ~8.4 ms | in a Worker; one view transform per splat |
+| Frame (render) | ~2.4–2.8 ms | 4 instanced vertices per splat |
 
-The sort is the dominant cost per moving frame, which is exactly why it is not on the main thread. Sorting is `O(n + bins)` with 65,536 depth bins — no comparisons, no allocation after setup.
+Sorting dominates the cost of a moving frame, which is exactly why it is not on the main thread. It is `O(n + bins)` with 65,536 depth bins — no comparisons, no allocation after setup.
+
+Baking the covariance during load costs about 55 ms once, and pays for itself on the first camera move: the sort drops from ~13 ms to ~8.4 ms and the attribute footprint from 52 to 44 bytes per splat. The render pass does not get faster on a desktop GPU, because it was never the bottleneck there — the saving shows up on integrated graphics, on larger scenes, and in power draw.
 
 ## How it works
 
 ```
-.sog  →  unzip (deflate-raw)  →  decode WebP planes  →  dequantise
+.sog  →  unzip (deflate-raw)  →  decode WebP planes  →  dequantise + bake covariance
                                                           │
                         ┌─────────────────────────────────┴─────────────┐
                         ▼                                               ▼
-            float textures (pos / rot / scale+opacity)      positions → Worker
-            RGBA8 texture (DC colour)                              │
-                        │                                    bucket sort + cull
+            float textures (position+opacity,           positions → Worker
+            covariance as vec4 + vec2)                            │
+            RGBA8 texture (DC colour)                     one transform, cull,
+                        │                                  bucket sort
                         │                                              │
                         │                          order texture (R32UI, W×H)
                         │                                              │
@@ -106,6 +109,8 @@ The sort is the dominant cost per moving frame, which is exactly why it is not o
 ```
 
 Sorting is back-to-front, which is what alpha compositing requires. `gl_InstanceID` indexes the order texture, the order texture indexes the attribute textures, and the vertex shader expands each splat into a screen-aligned ellipse. Fragments outside the unit disc are discarded and alpha falls off as `exp(-4.5 r²)`, so 3σ lands on the quad edge.
+
+The projection is a quadratic form rather than two matrix products. With `B = J · Rview` and the symmetric covariance `Σ`, the 2×2 screen matrix is `B Σ Bᵀ`; writing the three independent components out by hand removes a 3×3 product, a transpose and a full matrix multiply from every vertex. Because `Σ = M Mᵀ` with `M = R S` does not depend on the camera, it is computed once at load and stored instead of the rotation and scale it came from — six floats rather than eight.
 
 Blending is premultiplied: the fragment writes `(rgb * alpha, alpha)` and the blend func is `ONE, ONE_MINUS_SRC_ALPHA`.
 

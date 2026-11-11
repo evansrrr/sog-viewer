@@ -21,8 +21,8 @@ uniform vec2 uRes;
 uniform int uW;
 uniform usampler2D uOrder;
 uniform sampler2D uPos;
-uniform sampler2D uRot;
-uniform sampler2D uScl;
+uniform sampler2D uCovA;
+uniform sampler2D uCovB;
 uniform sampler2D uCol;
 
 layout(location = 0) in vec2 aCorner;
@@ -31,53 +31,47 @@ out vec2 vLocal;
 out float vOpacity;
 out vec4 vColor;
 
-mat3 quatToMat(vec4 q) {
-  float x = q.x, y = q.y, z = q.z, w = q.w;
-  float x2 = x + x, y2 = y + y, z2 = z + z;
-  float xx = x * x2, xy = x * y2, xz = x * z2;
-  float yy = y * y2, yz = y * z2, zz = z * z2;
-  float wx = w * x2, wy = w * y2, wz = w * z2;
-  return mat3(1.0 - (yy + zz), xy + wz, xz - wy,
-              xy - wz, 1.0 - (xx + zz), yz + wx,
-              xz + wy, yz - wx, 1.0 - (xx + yy));
-}
-
 void main() {
   uint id = texelFetch(uOrder, ivec2(gl_InstanceID % uW, gl_InstanceID / uW), 0).r;
   ivec2 uv = ivec2(int(id) % uW, int(id) / uW);
 
   vec4 p = texelFetch(uPos, uv, 0);
-  vec4 q = texelFetch(uRot, uv, 0);
-  vec4 s = texelFetch(uScl, uv, 0);
+  vec4 ca = texelFetch(uCovA, uv, 0);
+  vec2 cb = texelFetch(uCovB, uv, 0).xy;
 
   vec4 vp = uView * vec4(p.xyz, 1.0);
   vec4 clip = uProj * vp;
 
   vLocal = aCorner;
-  vOpacity = s.w;
+  vOpacity = p.w;
   vColor = texelFetch(uCol, uv, 0);
 
-  if (clip.w <= 0.02 || s.w < 0.004) {
+  if (clip.w <= 0.02 || p.w < 0.004) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     return;
   }
 
-  mat3 rv = mat3(uView);
-  mat3 m = quatToMat(q) * mat3(s.x, 0.0, 0.0, 0.0, s.y, 0.0, 0.0, 0.0, s.z);
-  mat3 sigma = rv * (m * transpose(m)) * transpose(rv);
-
   float az = max(-vp.z, 0.02);
   float invz = 1.0 / az;
-  mat3 j = mat3(
-    uFocal.x * invz, 0.0, -uFocal.x * vp.x * invz * invz,
-    0.0, uFocal.y * invz, -uFocal.y * vp.y * invz * invz,
-    0.0, 0.0, 0.0
-  );
-  mat3 t = j * sigma * transpose(j);
+  float invz2 = invz * invz;
 
-  float a = t[0][0] + 0.3;
-  float b = t[0][1];
-  float d = t[1][1] + 0.3;
+  vec3 j0 = vec3(uFocal.x * invz, 0.0, -uFocal.x * vp.x * invz2);
+  vec3 j1 = vec3(0.0, uFocal.y * invz, -uFocal.y * vp.y * invz2);
+
+  mat3 rv = mat3(uView);
+  vec3 b0 = j0 * rv;
+  vec3 b1 = j1 * rv;
+
+  float s00 = ca.x, s01 = ca.y, s02 = ca.z, s11 = ca.w;
+  float s12 = cb.x, s22 = cb.y;
+
+  float a = b0.x * b0.x * s00 + 2.0 * b0.x * b0.y * s01 + 2.0 * b0.x * b0.z * s02
+          + b0.y * b0.y * s11 + 2.0 * b0.y * b0.z * s12 + b0.z * b0.z * s22 + 0.3;
+  float b = b0.x * b1.x * s00 + (b0.x * b1.y + b0.y * b1.x) * s01
+          + (b0.x * b1.z + b0.z * b1.x) * s02 + b0.y * b1.y * s11
+          + (b0.y * b1.z + b0.z * b1.y) * s12 + b0.z * b1.z * s22;
+  float d = b1.x * b1.x * s00 + 2.0 * b1.x * b1.y * s01 + 2.0 * b1.x * b1.z * s02
+          + b1.y * b1.y * s11 + 2.0 * b1.y * b1.z * s12 + b1.z * b1.z * s22 + 0.3;
 
   float mid = 0.5 * (a + d);
   float disc = sqrt(max(0.0, mid * mid - (a * d - b * b)));
@@ -151,7 +145,7 @@ export class SplatRenderer {
     }
 
     this.uniforms = {};
-    for (const name of ['uView', 'uProj', 'uFocal', 'uRes', 'uW', 'uOrder', 'uPos', 'uRot', 'uScl', 'uCol', 'uExposure']) {
+    for (const name of ['uView', 'uProj', 'uFocal', 'uRes', 'uW', 'uOrder', 'uPos', 'uCovA', 'uCovB', 'uCol', 'uExposure']) {
       this.uniforms[name] = gl.getUniformLocation(this.program, name);
     }
 
@@ -205,17 +199,21 @@ export class SplatRenderer {
   /**
    * Upload decoded SOG planes. `order` is a Uint32Array of splat indices laid out
    * row-major over the same W x H grid as the attribute planes.
+   *
+   * The covariance arrives pre-baked as six independent components spread over a
+   * vec4 and a vec2 plane. Storing the factors instead would cost two extra floats
+   * per splat and force the shader to rebuild the matrix every vertex.
    */
   setSplatData(data, order) {
     const { gl } = this;
-    const { width, height, position, rotation, scaleOpacity, color, count } = data;
+    const { width, height, position, covarianceA, covarianceB, color, count } = data;
 
     this.disposeTextures();
 
     this.textures.order = this.#texture(0, gl.R32UI, gl.RED_INTEGER, gl.UNSIGNED_INT, width, height, order);
     this.textures.position = this.#texture(1, gl.RGBA32F, gl.RGBA, gl.FLOAT, width, height, position);
-    this.textures.rotation = this.#texture(2, gl.RGBA32F, gl.RGBA, gl.FLOAT, width, height, rotation);
-    this.textures.scale = this.#texture(3, gl.RGBA32F, gl.RGBA, gl.FLOAT, width, height, scaleOpacity);
+    this.textures.covarianceA = this.#texture(2, gl.RGBA32F, gl.RGBA, gl.FLOAT, width, height, covarianceA);
+    this.textures.covarianceB = this.#texture(3, gl.RG32F, gl.RG, gl.FLOAT, width, height, covarianceB);
     this.textures.color = this.#texture(4, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, width, height, color);
 
     this.width = width;
@@ -228,9 +226,13 @@ export class SplatRenderer {
   updateOrder(order, visible) {
     const { gl } = this;
     if (!this.textures.order) return;
+    // Only the first `visible` entries are read, so upload just enough rows.
+    // Culling is what makes this cheaper: a zoomed-in view can cut the transfer
+    // by an order of magnitude.
+    const rows = Math.max(1, Math.min(this.height, Math.ceil(visible / this.width)));
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.textures.order);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.width, this.height, gl.RED_INTEGER, gl.UNSIGNED_INT, order);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.width, rows, gl.RED_INTEGER, gl.UNSIGNED_INT, order);
     this.visible = visible;
   }
 
@@ -263,8 +265,8 @@ export class SplatRenderer {
     gl.uniform1f(this.uniforms.uExposure, this.exposure);
     gl.uniform1i(this.uniforms.uOrder, 0);
     gl.uniform1i(this.uniforms.uPos, 1);
-    gl.uniform1i(this.uniforms.uRot, 2);
-    gl.uniform1i(this.uniforms.uScl, 3);
+    gl.uniform1i(this.uniforms.uCovA, 2);
+    gl.uniform1i(this.uniforms.uCovB, 3);
     gl.uniform1i(this.uniforms.uCol, 4);
 
     gl.disable(gl.DEPTH_TEST);
